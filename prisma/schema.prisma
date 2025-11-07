@@ -1,0 +1,118 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String    @id @default(uuid())
+  auth0Id      String    @unique // Auth0 user ID (sub claim)
+  email        String    @unique
+  username     String?   @unique
+  profilePic   String?
+  emailVerified Boolean  @default(false)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  lastLoginAt  DateTime?
+  
+  // Relationships
+  follows      Follow[]
+  // notifications Notification[] // commented this out
+  
+  @@map("users")
+}
+
+model Fighter {
+  id           String    @id @default(uuid())
+  firstName    String
+  lastName     String
+  nickname     String?
+  heightCm     Float?
+  weightLbs    Float?
+  reachCm      Float?
+  stance       String?
+  dateOfBirth  DateTime?
+  wins         Int       @default(0)
+  losses       Int       @default(0)
+  draws        Int       @default(0)
+  noContests   Int       @default(0)
+  weightClass  String
+  ranking      Int?
+  country      String?
+  team         String?
+  imageUrl     String?
+  
+  // Relationships
+  follows      Follow[]
+  fightsAsA    Fight[]   @relation("FighterA")
+  fightsAsB    Fight[]   @relation("FighterB")
+  
+  @@unique([firstName, lastName])
+  @@map("fighters")
+}
+
+
+model Follow {
+  id        String   @id @default(uuid())
+  userId    String
+  fighterId String
+  createdAt DateTime @default(now())
+  
+  // Relationships
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fighter   Fighter @relation(fields: [fighterId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, fighterId])
+  @@map("follows")
+}
+
+model Fight {
+  id           String   @id @default(uuid())
+  eventId      String
+  fighterAId   String
+  fighterBId   String
+  weightClass  String
+  isMainEvent  Boolean  @default(false)
+  isTitleFight Boolean  @default(false)
+  result       String?  // 'fighter_a_win', 'fighter_b_win', 'draw', 'nc'
+  roundEnded   Int?
+  method       String?  // 'KO', 'SUB', 'DEC', 'DQ'
+  createdAt    DateTime @default(now())
+  
+  // Relationships
+  event    Event   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  fighterA Fighter @relation("FighterA", fields: [fighterAId], references: [id])
+  fighterB Fighter @relation("FighterB", fields: [fighterBId], references: [id])
+  
+  @@map("fights")
+}
+
+model Event {
+  id           String    @id @default(uuid())
+  name         String
+  date         DateTime
+  location     String?
+  venue        String?
+  city         String?
+  country      String?
+  promotion    String?   // e.g. "UFC", "Bellator", "ONE Championship"
+  bannerImage  String?   // optional cover image for the event
+  isCompleted  Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // Relationships
+  fights       Fight[]   // 
+
+  @@map("events")
+}
