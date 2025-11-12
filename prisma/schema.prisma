@@ -107,6 +107,7 @@ model Event {
   country      String?
   promotion    String?   // e.g. "UFC", "Bellator", "ONE Championship"
   bannerImage  String?   // optional cover image for the event
+  eventUrl     String?   @unique // URL from ufcstats.com
   isCompleted  Boolean   @default(false)
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt

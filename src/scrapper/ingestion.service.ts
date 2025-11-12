@@ -42,42 +42,79 @@ export class IngestionService {
         // Parse location to extract city and country
         const { city, country, location } = this.parseLocation(event.location);
 
-        // Check if event already exists (by name and date)
-        const existingEvent = await this.prisma.event.findFirst({
-          where: {
-            name: event.name,
-            date: eventDate,
-          },
-        });
-
-        if (existingEvent) {
-          // Update existing event
-          await this.prisma.event.update({
-            where: { id: existingEvent.id },
-            data: {
-              location,
-              city,
-              country,
-              promotion: 'UFC', // Default to UFC
-              isCompleted,
-              updatedAt: new Date(),
-            },
+        // Use upsert with eventUrl as unique identifier (if available)
+        // Otherwise fall back to name + date
+        if (event.eventUrl) {
+          const existing = await this.prisma.event.findUnique({
+            where: { eventUrl: event.eventUrl },
           });
-          results.updated++;
+
+          if (existing) {
+            await this.prisma.event.update({
+              where: { eventUrl: event.eventUrl },
+              data: {
+                name: event.name,
+                date: eventDate,
+                location,
+                city,
+                country,
+                promotion: 'UFC',
+                isCompleted,
+                updatedAt: new Date(),
+              },
+            });
+            results.updated++;
+          } else {
+            await this.prisma.event.create({
+              data: {
+                name: event.name,
+                date: eventDate,
+                location,
+                city,
+                country,
+                promotion: 'UFC',
+                eventUrl: event.eventUrl,
+                isCompleted,
+              },
+            });
+            results.created++;
+          }
         } else {
-          // Create new event
-          await this.prisma.event.create({
-            data: {
+          // Fallback: check by name and date
+          const existingEvent = await this.prisma.event.findFirst({
+            where: {
               name: event.name,
               date: eventDate,
-              location,
-              city,
-              country,
-              promotion: 'UFC',
-              isCompleted,
             },
           });
-          results.created++;
+
+          if (existingEvent) {
+            await this.prisma.event.update({
+              where: { id: existingEvent.id },
+              data: {
+                location,
+                city,
+                country,
+                promotion: 'UFC',
+                isCompleted,
+                updatedAt: new Date(),
+              },
+            });
+            results.updated++;
+          } else {
+            await this.prisma.event.create({
+              data: {
+                name: event.name,
+                date: eventDate,
+                location,
+                city,
+                country,
+                promotion: 'UFC',
+                isCompleted,
+              },
+            });
+            results.created++;
+          }
         }
       } catch (error) {
         results.errors.push(`Error processing ${event.name}: ${error.message}`);
