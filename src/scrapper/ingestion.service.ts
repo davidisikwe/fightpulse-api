@@ -1,11 +1,40 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
+export interface ScrapedFighter {
+  firstName: string;
+  lastName: string;
+  nickname?: string;
+  weightClass: string;
+  country?: string;
+  imageUrl?: string;
+  // Stats (for completed events)
+  wins?: number;
+  losses?: number;
+  draws?: number;
+  noContests?: number;
+}
+
+export interface ScrapedFight {
+  fighterA: ScrapedFighter;
+  fighterB: ScrapedFighter;
+  weightClass: string;
+  isMainEvent?: boolean;
+  isTitleFight?: boolean;
+  // Results (for completed events)
+  result?: 'fighter_a_win' | 'fighter_b_win' | 'draw' | 'nc';
+  roundEnded?: number;
+  method?: string; // 'KO', 'SUB', 'DEC', 'DQ'
+}
+
 export interface ScrapedEvent {
   name: string;
   date: string; // "November 01, 2025"
   location: string; // "Las Vegas, Nevada, USA"
   eventUrl: string;
+  venue?: string;
+  bannerImage?: string;
+  fights?: ScrapedFight[]; // Event details with fights
 }
 
 export interface IngestionPayload {
@@ -25,8 +54,9 @@ export class IngestionService {
     const isCompleted = type === 'completed_events';
 
     const results = {
-      created: 0,
-      updated: 0,
+      events: { created: 0, updated: 0 },
+      fighters: { created: 0, updated: 0 },
+      fights: { created: 0, updated: 0 },
       errors: [] as string[],
     };
 
@@ -42,78 +72,66 @@ export class IngestionService {
         // Parse location to extract city and country
         const { city, country, location } = this.parseLocation(event.location);
 
-        // Use upsert with eventUrl as unique identifier (if available)
-        // Otherwise fall back to name + date
-        if (event.eventUrl) {
-          const existing = await this.prisma.event.findUnique({
-            where: { eventUrl: event.eventUrl },
-          });
+        // Upsert event
+        const dbEvent = await this.upsertEvent({
+          name: event.name,
+          date: eventDate,
+          location,
+          city,
+          country,
+          venue: event.venue,
+          bannerImage: event.bannerImage,
+          eventUrl: event.eventUrl,
+          isCompleted,
+        });
 
-          if (existing) {
-            await this.prisma.event.update({
-              where: { eventUrl: event.eventUrl },
-              data: {
-                name: event.name,
-                date: eventDate,
-                location,
-                city,
-                country,
-                promotion: 'UFC',
-                isCompleted,
-                updatedAt: new Date(),
-              },
-            });
-            results.updated++;
-          } else {
-            await this.prisma.event.create({
-              data: {
-                name: event.name,
-                date: eventDate,
-                location,
-                city,
-                country,
-                promotion: 'UFC',
-                eventUrl: event.eventUrl,
-                isCompleted,
-              },
-            });
-            results.created++;
-          }
+        if (dbEvent.wasCreated) {
+          results.events.created++;
         } else {
-          // Fallback: check by name and date
-          const existingEvent = await this.prisma.event.findFirst({
-            where: {
-              name: event.name,
-              date: eventDate,
-            },
-          });
+          results.events.updated++;
+        }
 
-          if (existingEvent) {
-            await this.prisma.event.update({
-              where: { id: existingEvent.id },
-              data: {
-                location,
-                city,
-                country,
-                promotion: 'UFC',
+        // If event has fights, ingest them
+        if (event.fights && event.fights.length > 0) {
+          for (const fight of event.fights) {
+            try {
+              // Find or create fighters
+              const fighterA = await this.findOrCreateFighter(
+                fight.fighterA,
                 isCompleted,
-                updatedAt: new Date(),
-              },
-            });
-            results.updated++;
-          } else {
-            await this.prisma.event.create({
-              data: {
-                name: event.name,
-                date: eventDate,
-                location,
-                city,
-                country,
-                promotion: 'UFC',
+              );
+              const fighterB = await this.findOrCreateFighter(
+                fight.fighterB,
                 isCompleted,
-              },
-            });
-            results.created++;
+              );
+
+              if (fighterA.wasCreated) results.fighters.created++;
+              else if (fighterA.wasUpdated) results.fighters.updated++;
+
+              if (fighterB.wasCreated) results.fighters.created++;
+              else if (fighterB.wasUpdated) results.fighters.updated++;
+
+              // Upsert fight
+              const dbFight = await this.upsertFight({
+                eventId: dbEvent.id,
+                fighterAId: fighterA.id,
+                fighterBId: fighterB.id,
+                weightClass: fight.weightClass,
+                isMainEvent: fight.isMainEvent ?? false,
+                isTitleFight: fight.isTitleFight ?? false,
+                result: fight.result,
+                roundEnded: fight.roundEnded,
+                method: fight.method,
+              });
+
+              if (dbFight.wasCreated) results.fights.created++;
+              else results.fights.updated++;
+            } catch (error) {
+              results.errors.push(
+                `Error processing fight in ${event.name}: ${error.message}`,
+              );
+              console.error(`Error ingesting fight:`, error);
+            }
           }
         }
       } catch (error) {
@@ -129,6 +147,208 @@ export class IngestionService {
       ...results,
       timestamp: new Date().toISOString(),
     };
+  }
+
+  /**
+   * Upsert an event in the database
+   */
+  private async upsertEvent(eventData: {
+    name: string;
+    date: Date;
+    location: string | null;
+    city: string | null;
+    country: string | null;
+    venue?: string;
+    bannerImage?: string;
+    eventUrl?: string;
+    isCompleted: boolean;
+  }): Promise<{ id: string; wasCreated: boolean }> {
+    if (eventData.eventUrl) {
+      const existing = await this.prisma.event.findUnique({
+        where: { eventUrl: eventData.eventUrl },
+      });
+
+      if (existing) {
+        await this.prisma.event.update({
+          where: { eventUrl: eventData.eventUrl },
+          data: {
+            name: eventData.name,
+            date: eventData.date,
+            location: eventData.location,
+            city: eventData.city,
+            country: eventData.country,
+            venue: eventData.venue,
+            bannerImage: eventData.bannerImage,
+            promotion: 'UFC',
+            isCompleted: eventData.isCompleted,
+            updatedAt: new Date(),
+          },
+        });
+        return { id: existing.id, wasCreated: false };
+      } else {
+        const created = await this.prisma.event.create({
+          data: {
+            name: eventData.name,
+            date: eventData.date,
+            location: eventData.location,
+            city: eventData.city,
+            country: eventData.country,
+            venue: eventData.venue,
+            bannerImage: eventData.bannerImage,
+            promotion: 'UFC',
+            eventUrl: eventData.eventUrl,
+            isCompleted: eventData.isCompleted,
+          },
+        });
+        return { id: created.id, wasCreated: true };
+      }
+    } else {
+      // Fallback: check by name and date
+      const existingEvent = await this.prisma.event.findFirst({
+        where: {
+          name: eventData.name,
+          date: eventData.date,
+        },
+      });
+
+      if (existingEvent) {
+        await this.prisma.event.update({
+          where: { id: existingEvent.id },
+          data: {
+            location: eventData.location,
+            city: eventData.city,
+            country: eventData.country,
+            venue: eventData.venue,
+            bannerImage: eventData.bannerImage,
+            promotion: 'UFC',
+            isCompleted: eventData.isCompleted,
+            updatedAt: new Date(),
+          },
+        });
+        return { id: existingEvent.id, wasCreated: false };
+      } else {
+        const created = await this.prisma.event.create({
+          data: {
+            name: eventData.name,
+            date: eventData.date,
+            location: eventData.location,
+            city: eventData.city,
+            country: eventData.country,
+            venue: eventData.venue,
+            bannerImage: eventData.bannerImage,
+            promotion: 'UFC',
+            isCompleted: eventData.isCompleted,
+          },
+        });
+        return { id: created.id, wasCreated: true };
+      }
+    }
+  }
+
+  /**
+   * Find or create a fighter in the database
+   */
+  private async findOrCreateFighter(
+    fighterData: ScrapedFighter,
+    isCompleted: boolean,
+  ): Promise<{ id: string; wasCreated: boolean; wasUpdated: boolean }> {
+    const existing = await this.prisma.fighter.findFirst({
+      where: {
+        firstName: fighterData.firstName,
+        lastName: fighterData.lastName,
+      },
+    });
+
+    if (existing) {
+      // Update fighter stats if this is a completed event
+      if (isCompleted && fighterData.wins !== undefined) {
+        await this.prisma.fighter.update({
+          where: { id: existing.id },
+          data: {
+            nickname: fighterData.nickname || existing.nickname,
+            weightClass: fighterData.weightClass,
+            country: fighterData.country || existing.country,
+            imageUrl: fighterData.imageUrl || existing.imageUrl,
+            wins: fighterData.wins,
+            losses: fighterData.losses ?? 0,
+            draws: fighterData.draws ?? 0,
+            noContests: fighterData.noContests ?? 0,
+          },
+        });
+        return { id: existing.id, wasCreated: false, wasUpdated: true };
+      }
+      return { id: existing.id, wasCreated: false, wasUpdated: false };
+    } else {
+      const created = await this.prisma.fighter.create({
+        data: {
+          firstName: fighterData.firstName,
+          lastName: fighterData.lastName,
+          nickname: fighterData.nickname,
+          weightClass: fighterData.weightClass,
+          country: fighterData.country,
+          imageUrl: fighterData.imageUrl,
+          wins: fighterData.wins ?? 0,
+          losses: fighterData.losses ?? 0,
+          draws: fighterData.draws ?? 0,
+          noContests: fighterData.noContests ?? 0,
+        },
+      });
+      return { id: created.id, wasCreated: true, wasUpdated: false };
+    }
+  }
+
+  /**
+   * Upsert a fight in the database
+   */
+  private async upsertFight(fightData: {
+    eventId: string;
+    fighterAId: string;
+    fighterBId: string;
+    weightClass: string;
+    isMainEvent: boolean;
+    isTitleFight: boolean;
+    result?: string;
+    roundEnded?: number;
+    method?: string;
+  }): Promise<{ id: string; wasCreated: boolean }> {
+    // Check if fight already exists (same event, same fighters)
+    const existing = await this.prisma.fight.findFirst({
+      where: {
+        eventId: fightData.eventId,
+        fighterAId: fightData.fighterAId,
+        fighterBId: fightData.fighterBId,
+      },
+    });
+
+    if (existing) {
+      await this.prisma.fight.update({
+        where: { id: existing.id },
+        data: {
+          weightClass: fightData.weightClass,
+          isMainEvent: fightData.isMainEvent,
+          isTitleFight: fightData.isTitleFight,
+          result: fightData.result,
+          roundEnded: fightData.roundEnded,
+          method: fightData.method,
+        },
+      });
+      return { id: existing.id, wasCreated: false };
+    } else {
+      const created = await this.prisma.fight.create({
+        data: {
+          eventId: fightData.eventId,
+          fighterAId: fightData.fighterAId,
+          fighterBId: fightData.fighterBId,
+          weightClass: fightData.weightClass,
+          isMainEvent: fightData.isMainEvent,
+          isTitleFight: fightData.isTitleFight,
+          result: fightData.result,
+          roundEnded: fightData.roundEnded,
+          method: fightData.method,
+        },
+      });
+      return { id: created.id, wasCreated: true };
+    }
   }
 
   /**
