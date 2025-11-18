@@ -16,15 +16,17 @@ export interface ScrapedFighter {
 }
 
 export interface ScrapedFight {
-  fighterA: ScrapedFighter;
-  fighterB: ScrapedFighter;
+  fighterA: string; // Scraper sends fighter names as strings
+  fighterB: string;
   weightClass: string;
   isMainEvent?: boolean;
-  isTitleFight?: boolean;
+  isChampionship?: boolean;
   // Results (for completed events)
-  result?: 'fighter_a_win' | 'fighter_b_win' | 'draw' | 'nc';
-  roundEnded?: number;
+  winner?: string; // Winner name from scraper
+  result?: string; // "loss", "win", etc. from scraper
+  round?: string; // Round number as string (can be empty)
   method?: string; // 'KO', 'SUB', 'DEC', 'DQ'
+  methodDetail?: string; // Additional method info
 }
 
 export interface ScrapedEvent {
@@ -95,13 +97,38 @@ export class IngestionService {
         if (event.fights && event.fights.length > 0) {
           for (const fight of event.fights) {
             try {
+              // Step 2: Parse fighter names from strings
+              const fighterAName = this.parseFighterName(fight.fighterA);
+              const fighterBName = this.parseFighterName(fight.fighterB);
+
+              if (!fighterAName || !fighterBName) {
+                results.errors.push(
+                  `Invalid fighter names in fight: ${fight.fighterA} vs ${fight.fighterB}`,
+                );
+                continue;
+              }
+
+              // Create ScrapedFighter objects from parsed names
+              const fighterAData: ScrapedFighter = {
+                firstName: fighterAName.firstName,
+                lastName: fighterAName.lastName,
+                weightClass: fight.weightClass,
+                // Scraper doesn't provide other fighter details in fight data
+              };
+
+              const fighterBData: ScrapedFighter = {
+                firstName: fighterBName.firstName,
+                lastName: fighterBName.lastName,
+                weightClass: fight.weightClass,
+              };
+
               // Find or create fighters
               const fighterA = await this.findOrCreateFighter(
-                fight.fighterA,
+                fighterAData,
                 isCompleted,
               );
               const fighterB = await this.findOrCreateFighter(
-                fight.fighterB,
+                fighterBData,
                 isCompleted,
               );
 
@@ -111,6 +138,25 @@ export class IngestionService {
               if (fighterB.wasCreated) results.fighters.created++;
               else if (fighterB.wasUpdated) results.fighters.updated++;
 
+              // Step 3: Map result from scraper format to database format
+              const fightResult = this.mapFightResult(
+                fight.result,
+                fight.winner,
+                fight.fighterA,
+                fight.fighterB,
+              );
+
+              // Parse round safely (handle empty strings)
+              const roundEnded =
+                fight.round && fight.round.trim()
+                  ? parseInt(fight.round.trim(), 10)
+                  : undefined;
+              // Convert NaN to undefined (Prisma requirement)
+              const roundEndedSafe =
+                roundEnded !== undefined && isNaN(roundEnded)
+                  ? undefined
+                  : roundEnded;
+
               // Upsert fight
               const dbFight = await this.upsertFight({
                 eventId: dbEvent.id,
@@ -118,10 +164,10 @@ export class IngestionService {
                 fighterBId: fighterB.id,
                 weightClass: fight.weightClass,
                 isMainEvent: fight.isMainEvent ?? false,
-                isTitleFight: fight.isTitleFight ?? false,
-                result: fight.result,
-                roundEnded: fight.roundEnded,
-                method: fight.method,
+                isTitleFight: fight.isChampionship ?? false,
+                result: fightResult, // Mapped result
+                roundEnded: roundEndedSafe,
+                method: fight.method || fight.methodDetail, // Use methodDetail as fallback
               });
 
               if (dbFight.wasCreated) results.fights.created++;
@@ -307,7 +353,7 @@ export class IngestionService {
     weightClass: string;
     isMainEvent: boolean;
     isTitleFight: boolean;
-    result?: string;
+    result?: 'fighter_a_win' | 'fighter_b_win' | 'draw' | 'nc';
     roundEnded?: number;
     method?: string;
   }): Promise<{ id: string; wasCreated: boolean }> {
@@ -365,6 +411,81 @@ export class IngestionService {
     } catch {
       return null;
     }
+  }
+
+  private parseFighterName(
+    fighterName: string,
+  ): { firstName: string; lastName: string } | null {
+    try {
+      if (!fighterName || !fighterName.trim()) {
+        return null;
+      }
+
+      const parts = fighterName.trim().split(/\s+/);
+
+      if (parts.length === 0) {
+        return null;
+      }
+
+      if (parts.length === 1) {
+        // Only one name provided - treat as last name
+        return { firstName: '', lastName: parts[0] };
+      }
+
+      // First name is first part, last name is everything else
+      const firstName = parts[0];
+      const lastName = parts.slice(1).join(' '); // Handles "Machado Garry" correctly
+
+      return { firstName, lastName };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Map scraper result format to database format
+   * Scraper: result="loss", winner="Dan Hooker"
+   * Database: result="fighter_a_win" | "fighter_b_win" | "draw" | "nc"
+   */
+  private mapFightResult(
+    result: string | undefined,
+    winner: string | undefined,
+    fighterA: string,
+    fighterB: string,
+  ): 'fighter_a_win' | 'fighter_b_win' | 'draw' | 'nc' | undefined {
+    if (!result && !winner) {
+      return undefined; // No result available
+    }
+
+    // Strategy 1: Use winner name to determine (most reliable)
+    if (winner) {
+      const winnerTrimmed = winner.trim();
+      const fighterATrimmed = fighterA.trim();
+      const fighterBTrimmed = fighterB.trim();
+
+      if (winnerTrimmed === fighterATrimmed) {
+        return 'fighter_a_win'; // Fighter A won
+      } else if (winnerTrimmed === fighterBTrimmed) {
+        return 'fighter_b_win'; // Fighter B won
+      }
+    }
+
+    // Strategy 2: Parse result string as fallback
+    if (result) {
+      const resultLower = result.toLowerCase();
+      if (resultLower.includes('draw') || resultLower.includes('tie')) {
+        return 'draw';
+      }
+      if (
+        resultLower.includes('nc') ||
+        resultLower.includes('no contest') ||
+        resultLower.includes('no-contest')
+      ) {
+        return 'nc';
+      }
+    }
+
+    return undefined; // Could not determine result
   }
 
   /**
