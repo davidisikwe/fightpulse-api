@@ -5,12 +5,13 @@ import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { passportJwtSecret } from 'jwks-rsa';
 import * as dotenv from 'dotenv';
+import { UserService } from '../user/user.service';
 
 dotenv.config();
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
-  constructor() {
+  constructor(private userService: UserService) {
     super({
       secretOrKeyProvider: passportJwtSecret({
         cache: true,
@@ -26,7 +27,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  validate(payload: unknown): unknown {
-    return payload;
+  async validate(payload: any): Promise<any> {
+    const user = await this.userService.findOrCreateUser(payload);
+    return user; // This becomes req.user
   }
 }
