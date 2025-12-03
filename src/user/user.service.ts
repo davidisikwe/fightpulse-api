@@ -7,6 +7,7 @@ export interface Auth0User {
   name?: string;
   picture?: string;
   email_verified?: boolean;
+  loginTime?: Date;
 }
 
 @Injectable()
@@ -17,6 +18,45 @@ export class UserService {
    * Find or create a user from Auth0 payload
    * This method is called on every authenticated request
    */
+  // async findOrCreateUser(auth0User: Auth0User) {
+  //   console.log('Auth0User received:', auth0User); // ← Add this line
+  //   console.log('Email value:', auth0User.email);
+  //   const auth0Id = auth0User.sub;
+
+  //   // Try to find existing user by Auth0 ID
+  //   let user = await this.prisma.user.findUnique({
+  //     where: { auth0Id },
+  //   });
+
+  //   if (!user) {
+  //     // Create new user if doesn't exist
+  //     user = await this.prisma.user.create({
+  //       data: {
+  //         auth0Id,
+  //         email: auth0User.email,
+  //         username: this.generateUsername(auth0User.email, auth0User.name),
+  //         profilePic: auth0User.picture,
+  //         emailVerified: auth0User.email_verified || false,
+  //       },
+  //     });
+  //   } else {
+  //     // Update existing user with latest Auth0 data
+  //     user = await this.prisma.user.update({
+  //       where: { id: user.id },
+  //       data: {
+  //         email: auth0User.email,
+  //         username:
+  //           user.username ||
+  //           this.generateUsername(auth0User.email, auth0User.name),
+  //         profilePic: auth0User.picture || user.profilePic,
+  //         emailVerified: auth0User.email_verified || user.emailVerified,
+  //         lastLoginAt: new Date(),
+  //       },
+  //     });
+  //   }
+
+  //   return user;
+  // }
   async findOrCreateUser(auth0User: Auth0User) {
     console.log('Auth0User received:', auth0User); // ← Add this line
     console.log('Email value:', auth0User.email);
@@ -36,6 +76,7 @@ export class UserService {
           username: this.generateUsername(auth0User.email, auth0User.name),
           profilePic: auth0User.picture,
           emailVerified: auth0User.email_verified || false,
+          lastLoginAt: auth0User.loginTime,
         },
       });
     } else {
@@ -49,7 +90,7 @@ export class UserService {
             this.generateUsername(auth0User.email, auth0User.name),
           profilePic: auth0User.picture || user.profilePic,
           emailVerified: auth0User.email_verified || user.emailVerified,
-          lastLoginAt: new Date(),
+          lastLoginAt: auth0User.loginTime,
         },
       });
     }
