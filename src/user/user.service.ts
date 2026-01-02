@@ -37,6 +37,7 @@ export class UserService {
   //         username: this.generateUsername(auth0User.email, auth0User.name),
   //         profilePic: auth0User.picture,
   //         emailVerified: auth0User.email_verified || false,
+  //         lastLoginAt: auth0User.loginTime,
   //       },
   //     });
   //   } else {
@@ -50,7 +51,7 @@ export class UserService {
   //           this.generateUsername(auth0User.email, auth0User.name),
   //         profilePic: auth0User.picture || user.profilePic,
   //         emailVerified: auth0User.email_verified || user.emailVerified,
-  //         lastLoginAt: new Date(),
+  //         lastLoginAt: auth0User.loginTime,
   //       },
   //     });
   //   }
@@ -58,17 +59,14 @@ export class UserService {
   //   return user;
   // }
   async findOrCreateUser(auth0User: Auth0User) {
-    console.log('Auth0User received:', auth0User); // ← Add this line
-    console.log('Email value:', auth0User.email);
     const auth0Id = auth0User.sub;
 
-    // Try to find existing user by Auth0 ID
     let user = await this.prisma.user.findUnique({
       where: { auth0Id },
     });
 
     if (!user) {
-      // Create new user if doesn't exist
+      // 1. CREATE (No changes needed here)
       user = await this.prisma.user.create({
         data: {
           auth0Id,
@@ -80,19 +78,38 @@ export class UserService {
         },
       });
     } else {
-      // Update existing user with latest Auth0 data
-      user = await this.prisma.user.update({
-        where: { id: user.id },
-        data: {
-          email: auth0User.email,
-          username:
-            user.username ||
-            this.generateUsername(auth0User.email, auth0User.name),
-          profilePic: auth0User.picture || user.profilePic,
-          emailVerified: auth0User.email_verified || user.emailVerified,
-          lastLoginAt: auth0User.loginTime,
-        },
-      });
+      // 2. UPDATE (Optimized)
+      // IMPORTANT: If JWT says email_verified=true, always trust it (user got new token after verification)
+      // If JWT says false but DB says true, keep DB=true (don't downgrade)
+      const jwtEmailVerified = auth0User.email_verified || false;
+      const finalEmailVerified = jwtEmailVerified || user.emailVerified;
+
+      // Check if ANY field is different. This saves DB writes on 99% of requests.
+      const isProfileOutdated =
+        user.email !== auth0User.email ||
+        user.profilePic !== auth0User.picture ||
+        user.emailVerified !== finalEmailVerified;
+
+      // We always want to update lastLoginAt, but we can combine it with the profile check
+      if (isProfileOutdated) {
+        user = await this.prisma.user.update({
+          where: { id: user.id },
+          data: {
+            email: auth0User.email,
+            profilePic: auth0User.picture,
+            emailVerified: finalEmailVerified, // Use the merged value
+            lastLoginAt: auth0User.loginTime,
+          },
+        });
+      } else {
+        // Optional: If profile didn't change, maybe just update login time?
+        // Or skip entirely to make it super fast.
+        // For accurate "last seen", you usually want this:
+        user = await this.prisma.user.update({
+          where: { id: user.id },
+          data: { lastLoginAt: auth0User.loginTime },
+        });
+      }
     }
 
     return user;

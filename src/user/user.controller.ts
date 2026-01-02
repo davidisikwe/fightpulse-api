@@ -20,4 +20,14 @@ export class UserController {
     // Use userData from POST body, not req.user from JWT
     return await this.userService.findOrCreateUser(userData);
   }
+
+  @Get('status')
+  @UseGuards(AuthGuard('jwt'))
+  async getVerificationStatus(@Request() req) {
+    // The JWT strategy already syncs email_verified from the token to the DB on every request
+    // req.user is the DB user object returned from JWT strategy's validate() method
+    // So we can just return the status directly from req.user
+    // (The service now handles the case where JWT says verified=true but DB says false)
+    return { verified: req.user?.emailVerified || false };
+  }
 }
